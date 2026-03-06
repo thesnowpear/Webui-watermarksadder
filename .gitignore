@@ -23,12 +23,6 @@ wheels/
 .installed.cfg
 *.egg
 
-# 水印文件（用户数据）
-watermarks/images/*
-watermarks/texts/*
-!watermarks/images/.gitkeep
-!watermarks/texts/.gitkeep
-
 # 临时文件
 temp_*.png
 temp_*.jpg
@@ -36,6 +30,7 @@ temp_*.jpg
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
