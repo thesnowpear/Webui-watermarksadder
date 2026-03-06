@@ -116,8 +116,8 @@ class WatermarkManager:
             if wm_type == 'text':
                 text = wm.get('text', '水印')
                 color = wm.get('color', '#FFFFFF')
-                font_size = wm.get('font_size', 48)
-                scaled_font_size = max(1, int(font_size * size / 100))
+                # size 直接就是像素字号
+                scaled_font_size = max(1, int(size))
                 font = self._get_font(scaled_font_size)
                 if isinstance(color, str) and color.startswith('#') and len(color) >= 7:
                     r = int(color[1:3], 16)
@@ -143,7 +143,9 @@ class WatermarkManager:
                 if not img_path or not os.path.exists(img_path):
                     continue
                 wm_img = self._get_wm_image(img_path)
-                scale = size / 100.0
+                # size = 水印最短边的像素数
+                short_edge = min(wm_img.width, wm_img.height)
+                scale = max(1, size) / short_edge if short_edge > 0 else 1
                 new_w = max(1, int(wm_img.width * scale))
                 new_h = max(1, int(wm_img.height * scale))
                 wm_img = wm_img.resize((new_w, new_h), Image.BILINEAR)
@@ -293,8 +295,8 @@ def on_ui_tabs():
 
                 with gr.Row():
                     wm_size_slider = gr.Slider(
-                        minimum=1, maximum=1000, value=100, step=1,
-                        label="水印大小 (%)", elem_id="watermark_size"
+                        minimum=1, maximum=2000, value=100, step=1,
+                        label="水印大小 (px 最短边像素)", elem_id="watermark_size"
                     )
                     wm_rotation_slider = gr.Slider(
                         minimum=0, maximum=360, value=0, step=5,
@@ -474,10 +476,10 @@ def on_ui_tabs():
             lines = []
             for i, wm in enumerate(wm_list):
                 if wm['type'] == 'text':
-                    lines.append(f"  [{i+1}] 文字: \"{wm.get('text', '')}\" ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}% 透明度:{wm.get('opacity', 0.7):.0%}")
+                    lines.append(f"  [{i+1}] 文字: \"{wm.get('text', '')}\" ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}px 透明度:{wm.get('opacity', 0.7):.0%}")
                 else:
                     name = Path(wm.get('path', '')).stem if wm.get('path') else '?'
-                    lines.append(f"  [{i+1}] 图片: {name} ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}% 透明度:{wm.get('opacity', 1.0):.0%}")
+                    lines.append(f"  [{i+1}] 图片: {name} ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}px 透明度:{wm.get('opacity', 1.0):.0%}")
             return f"共 {len(wm_list)} 个水印:\n" + "\n".join(lines)
 
         def undo_watermark(wm_list):

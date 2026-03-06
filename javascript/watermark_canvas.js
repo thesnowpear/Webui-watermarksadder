@@ -106,6 +106,40 @@
         img.src = '/file=' + path;
     }
 
+    // 等待图片完全就绪（支持大图重试）
+    function waitForImageReady(imgEl, callback, attempt) {
+        attempt = attempt || 0;
+        var maxAttempts = 30; // 最多重试 30 次 (~9秒)
+        var delay = attempt < 5 ? 100 : (attempt < 15 ? 300 : 500);
+
+        // 检查图片是否仍在 DOM 中
+        if (!imgEl || !imgEl.parentElement) return;
+        // 检查是否还是当前跟踪的 img
+        if (state.imgEl !== imgEl) return;
+
+        if (imgEl.complete && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+            // 尝试 decode 确保完全解码
+            if (imgEl.decode) {
+                imgEl.decode().then(function () {
+                    requestAnimationFrame(callback);
+                }).catch(function () {
+                    // decode 失败但图片有尺寸，仍然尝试
+                    requestAnimationFrame(callback);
+                });
+            } else {
+                requestAnimationFrame(callback);
+            }
+        } else if (attempt < maxAttempts) {
+            setTimeout(function () {
+                waitForImageReady(imgEl, callback, attempt + 1);
+            }, delay);
+        } else {
+            // 超时兜底：图片有 src 就强制创建
+            console.warn('[Watermark] Image load timeout, forcing canvas setup');
+            requestAnimationFrame(callback);
+        }
+    }
+
     // ============ 监听图片出现/消失并管理 Canvas ============
     function watchForImage() {
         const editorWrap = state.editorEl;
@@ -127,30 +161,10 @@
                 return;
             }
 
-            // 新的 img 元素出现 -> 创建 canvas
+            // 新的 img 元素出现 -> 等待就绪后创建 canvas
             state.imgEl = imgEl;
             removeCanvas();
-
-            // 等图片完全加载（包括解码）再创建 canvas
-            if (imgEl.complete && imgEl.naturalWidth > 0) {
-                // 使用 decode() 确保图片完全解码，避免半黑问题
-                if (imgEl.decode) {
-                    imgEl.decode().then(() => {
-                        requestAnimationFrame(() => setupCanvas());
-                    }).catch(() => {
-                        requestAnimationFrame(() => setupCanvas());
-                    });
-                } else {
-                    requestAnimationFrame(() => setupCanvas());
-                }
-            } else {
-                imgEl.addEventListener('load', () => {
-                    // load 后再等一帧确保渲染完成
-                    setTimeout(() => {
-                        requestAnimationFrame(() => setupCanvas());
-                    }, 100);
-                }, { once: true });
-            }
+            waitForImageReady(imgEl, function () { setupCanvas(); });
         }
 
         const observer = new MutationObserver(() => {
@@ -345,9 +359,9 @@
     function onWheel(e) {
         e.preventDefault();
         if (e.ctrlKey) {
-            // Ctrl+滚轮：调整大小
-            const delta = e.deltaY > 0 ? -3 : 3;
-            state.size = Math.max(1, Math.min(1000, state.size + delta));
+            // Ctrl+滚轮：调整大小(px)
+            const delta = e.deltaY > 0 ? -5 : 5;
+            state.size = Math.max(1, Math.min(2000, state.size + delta));
             updateSlider('#watermark_size', state.size);
         } else if (e.shiftKey) {
             // Shift+滚轮：调整角度
@@ -412,13 +426,12 @@
         ctx.rotate((wm.rotation * Math.PI) / 180);
 
         if (wm.type === 'text') {
-            const baseFontSize = wm.data.font_size || wm.data.fontSize || 48;
-            // 与 Python 一致: scaled = font_size * size / 100, 然后用 displayRatio 映射到 canvas
+            // size 直接就是像素字号（原图像素），用 displayRatio 映射到 canvas
             let displayRatio = 1;
             if (state.imgEl && state.imgEl.naturalWidth > 0 && state.canvas) {
                 displayRatio = state.canvas.width / state.imgEl.naturalWidth;
             }
-            const fontSize = Math.max(4, baseFontSize * wm.size / 100 * displayRatio);
+            const fontSize = Math.max(1, wm.size * displayRatio);
             ctx.font = 'bold ' + fontSize + 'px Arial, sans-serif';
             ctx.fillStyle = wm.data.color || '#FFFFFF';
             ctx.textAlign = 'center';
@@ -448,15 +461,13 @@
             const cachedImg = state.imgCache[path];
 
             if (cachedImg) {
-                // 用真实图片绘制，尺寸比例与 Python 一致
-                // Python: scale = size / 100, new_w = img.width * scale
-                // Canvas 上需要按显示比例缩放：canvas.width / 原图宽度
-                const scale = wm.size / 100;
-                // 估算原图与 canvas 的比例 (使用 imgEl 的自然尺寸)
+                // size = 最短边像素数（原图像素），用 displayRatio 映射到 canvas
                 let displayRatio = 1;
                 if (state.imgEl && state.imgEl.naturalWidth > 0 && state.canvas) {
                     displayRatio = state.canvas.width / state.imgEl.naturalWidth;
                 }
+                const shortEdge = Math.min(cachedImg.width, cachedImg.height);
+                const scale = shortEdge > 0 ? wm.size / shortEdge : 1;
                 const drawW = cachedImg.width * scale * displayRatio;
                 const drawH = cachedImg.height * scale * displayRatio;
                 ctx.drawImage(cachedImg, -drawW / 2, -drawH / 2, drawW, drawH);
