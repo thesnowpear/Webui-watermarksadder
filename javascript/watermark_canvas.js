@@ -33,6 +33,8 @@
         dragStartY: 0,
         dragStartPanX: 0,
         dragStartPanY: 0,
+        // letterbox 信息（object-fit: contain 的偏移和渲染尺寸）
+        letterbox: { offsetX: 0, offsetY: 0, renderW: 0, renderH: 0 },
     };
 
     // ============ 初始化 ============
@@ -275,14 +277,41 @@
 
     // ============ Canvas 创建/移除 ============
 
-    // 计算 img 元素内实际渲染的图片区域（处理 object-fit: contain 的 letterbox）
-    // 返回相对于 container 的本地坐标（不受 CSS transform 影响）
-    function getRenderedImageRect(imgEl, container) {
-        // 使用 offset 属性获取本地坐标（不受 transform 影响）
+    // 计算 img 元素内实际渲染图片的 letterbox 偏移（object-fit: contain）
+    // 返回 { offsetX, offsetY, renderW, renderH } 相对于 img 元素自身
+    function getLetterboxInfo(imgEl) {
         var elemW = imgEl.offsetWidth;
         var elemH = imgEl.offsetHeight;
+        var natW = imgEl.naturalWidth;
+        var natH = imgEl.naturalHeight;
 
-        // 通过 offset 链计算 img 相对于 container 的位置
+        if (!natW || !natH || !elemW || !elemH) {
+            return { offsetX: 0, offsetY: 0, renderW: elemW, renderH: elemH };
+        }
+
+        var objectFit = window.getComputedStyle(imgEl).objectFit;
+        if (objectFit !== 'contain') {
+            return { offsetX: 0, offsetY: 0, renderW: elemW, renderH: elemH };
+        }
+
+        var elemRatio = elemW / elemH;
+        var imgRatio = natW / natH;
+
+        if (Math.abs(elemRatio - imgRatio) / imgRatio < 0.02) {
+            return { offsetX: 0, offsetY: 0, renderW: elemW, renderH: elemH };
+        }
+
+        if (imgRatio > elemRatio) {
+            var renderH = elemW / imgRatio;
+            return { offsetX: 0, offsetY: (elemH - renderH) / 2, renderW: elemW, renderH: renderH };
+        } else {
+            var renderW = elemH * imgRatio;
+            return { offsetX: (elemW - renderW) / 2, offsetY: 0, renderW: renderW, renderH: elemH };
+        }
+    }
+
+    // 获取 img 元素相对于 container 的本地坐标位置和尺寸
+    function getImgLocalRect(imgEl, container) {
         var imgLeft = 0, imgTop = 0;
         var el = imgEl;
         while (el && el !== container) {
@@ -290,46 +319,7 @@
             imgTop += el.offsetTop;
             el = el.offsetParent;
         }
-
-        var natW = imgEl.naturalWidth;
-        var natH = imgEl.naturalHeight;
-        var baseResult = { left: imgLeft, top: imgTop, width: elemW, height: elemH, offsetX: 0, offsetY: 0 };
-
-        if (!natW || !natH || !elemW || !elemH) return baseResult;
-
-        var objectFit = window.getComputedStyle(imgEl).objectFit;
-        if (objectFit !== 'contain') return baseResult;
-
-        var elemRatio = elemW / elemH;
-        var imgRatio = natW / natH;
-
-        // 如果元素尺寸已经匹配图片宽高比（误差<2%），无需校正
-        if (Math.abs(elemRatio - imgRatio) / imgRatio < 0.02) return baseResult;
-
-        var renderW, renderH, letterboxX, letterboxY;
-
-        if (imgRatio > elemRatio) {
-            // 图片更宽 → 宽度撑满，高度有上下留白
-            renderW = elemW;
-            renderH = elemW / imgRatio;
-            letterboxX = 0;
-            letterboxY = (elemH - renderH) / 2;
-        } else {
-            // 图片更高 → 高度撑满，宽度有左右留白
-            renderH = elemH;
-            renderW = elemH * imgRatio;
-            letterboxX = (elemW - renderW) / 2;
-            letterboxY = 0;
-        }
-
-        return {
-            left: imgLeft + letterboxX,
-            top: imgTop + letterboxY,
-            width: renderW,
-            height: renderH,
-            offsetX: letterboxX,
-            offsetY: letterboxY,
-        };
+        return { left: imgLeft, top: imgTop, width: imgEl.offsetWidth, height: imgEl.offsetHeight };
     }
 
     // 获取 canvas 坐标（考虑 CSS transform 后的真实坐标）
@@ -381,19 +371,21 @@
         const canvas = document.createElement('canvas');
         canvas.id = 'watermark-overlay-canvas';
 
-        // 使用本地坐标计算实际渲染的图片区域（不受 transform 影响）
-        const imgRender = getRenderedImageRect(imgEl, container);
+        // Canvas 覆盖整个 img 元素（包含 letterbox 区域）
+        const imgRect = getImgLocalRect(imgEl, container);
+        const letterbox = getLetterboxInfo(imgEl);
+        state.letterbox = letterbox;
 
         canvas.style.cssText =
             'position:absolute;' +
-            'top:' + imgRender.top + 'px;' +
-            'left:' + imgRender.left + 'px;' +
-            'width:' + imgRender.width + 'px;' +
-            'height:' + imgRender.height + 'px;' +
+            'top:' + imgRect.top + 'px;' +
+            'left:' + imgRect.left + 'px;' +
+            'width:' + imgRect.width + 'px;' +
+            'height:' + imgRect.height + 'px;' +
             'z-index:100;pointer-events:auto;cursor:crosshair;';
 
-        canvas.width = Math.round(imgRender.width);
-        canvas.height = Math.round(imgRender.height);
+        canvas.width = Math.round(imgRect.width);
+        canvas.height = Math.round(imgRect.height);
 
         const containerStyle = window.getComputedStyle(container);
         if (containerStyle.position === 'static') {
@@ -462,19 +454,21 @@
         const container = state.canvas.parentElement;
         if (!container) return;
 
-        // 使用本地坐标（不受 transform 影响），无需临时移除 transform
-        const imgRender = getRenderedImageRect(state.imgEl, container);
+        // Canvas 覆盖整个 img 元素
+        const imgRect = getImgLocalRect(state.imgEl, container);
+        const letterbox = getLetterboxInfo(state.imgEl);
+        state.letterbox = letterbox;
 
-        if (imgRender.width === 0 || imgRender.height === 0) return;
+        if (imgRect.width === 0 || imgRect.height === 0) return;
 
-        const w = Math.round(imgRender.width);
-        const h = Math.round(imgRender.height);
+        const w = Math.round(imgRect.width);
+        const h = Math.round(imgRect.height);
 
         // 只在尺寸变化时更新
         if (state.canvas.width === w && state.canvas.height === h) return;
 
-        state.canvas.style.top = imgRender.top + 'px';
-        state.canvas.style.left = imgRender.left + 'px';
+        state.canvas.style.top = imgRect.top + 'px';
+        state.canvas.style.left = imgRect.left + 'px';
         state.canvas.style.width = w + 'px';
         state.canvas.style.height = h + 'px';
         state.canvas.width = w;
@@ -579,10 +573,13 @@
         var coords = getCanvasCoords(e);
         var cx = coords.x;
         var cy = coords.y;
-        var xRatio = cx / state.canvas.width;
-        var yRatio = cy / state.canvas.height;
 
-        // 添加到前端预览列表
+        // 考虑 letterbox 偏移：将 canvas 坐标映射到实际图片区域的比例
+        var lb = state.letterbox;
+        var xRatio = (cx - lb.offsetX) / lb.renderW;
+        var yRatio = (cy - lb.offsetY) / lb.renderH;
+
+        // 添加到前端预览列表（保存 canvas 坐标用于绘制）
         state.watermarks.push({
             type: state.selectedType,
             data: { ...state.selectedData },
@@ -728,8 +725,8 @@
         if (wm.type === 'text') {
             // size 直接就是像素字号（原图像素），用 displayRatio 映射到 canvas
             let displayRatio = 1;
-            if (state.imgEl && state.imgEl.naturalWidth > 0 && state.canvas) {
-                displayRatio = state.canvas.width / state.imgEl.naturalWidth;
+            if (state.imgEl && state.imgEl.naturalWidth > 0 && state.letterbox.renderW > 0) {
+                displayRatio = state.letterbox.renderW / state.imgEl.naturalWidth;
             }
             const fontSize = Math.max(1, wm.size * displayRatio);
             ctx.font = fontSize + 'px Arial, sans-serif';
@@ -763,8 +760,8 @@
             if (cachedImg) {
                 // size = 最短边像素数（原图像素），用 displayRatio 映射到 canvas
                 let displayRatio = 1;
-                if (state.imgEl && state.imgEl.naturalWidth > 0 && state.canvas) {
-                    displayRatio = state.canvas.width / state.imgEl.naturalWidth;
+                if (state.imgEl && state.imgEl.naturalWidth > 0 && state.letterbox.renderW > 0) {
+                    displayRatio = state.letterbox.renderW / state.imgEl.naturalWidth;
                 }
                 const shortEdge = Math.min(cachedImg.width, cachedImg.height);
                 const scale = shortEdge > 0 ? wm.size / shortEdge : 1;

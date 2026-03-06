@@ -58,7 +58,7 @@ The interface is divided into three panels:
 1. Click to select a watermark from the library
 2. Move your mouse over the editor — the watermark follows the cursor with a live preview
 3. Use shortcuts to adjust:
-   - **Ctrl + Scroll**: Adjust size (±10px)
+   - **Ctrl + Scroll**: Adjust size (±20px)
    - **Shift + Scroll**: Adjust rotation angle
    - **Alt + Scroll**: Adjust opacity
 4. **Left-click** to place the watermark
@@ -105,7 +105,7 @@ unzip extractable_1234567890.zip
 | Zoom image | Scroll wheel |
 | Pan image | Left-click and drag |
 | Reset view | Double-click |
-| Adjust watermark size | Ctrl + Scroll (±10px) |
+| Adjust watermark size | Ctrl + Scroll (±20px) |
 | Adjust rotation angle | Shift + Scroll |
 | Adjust opacity | Alt + Scroll |
 | Place watermark | Left-click |

@@ -288,7 +288,8 @@ def on_ui_tabs():
             with gr.Column(scale=2, min_width=400):
                 gr.Markdown("### 编辑区")
                 gr.Markdown(
-                    "滚轮: 缩放图片 | 长按拖拽: 移动图片 | 双击: 重置视图 | Ctrl+滚轮: 调整大小 | Shift+滚轮: 调整角度 | Alt+滚轮: 调整透明度",
+                    "滚轮: 缩放图片 | 长按拖拽: 移动图片 | 双击: 重置视图 | Ctrl+滚轮: 调整大小 | Shift+滚轮: 调整角度 | Alt+滚轮: 调整透明度\n\n"
+                    "**提示**: 笔记本触摸板缩放可能存在兼容问题，建议使用图片右侧的滑块进行缩放。",
                     elem_classes=["watermark-shortcuts-hint"]
                 )
 

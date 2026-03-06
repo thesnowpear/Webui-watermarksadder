@@ -15,7 +15,7 @@ A watermark extension for Stable Diffusion WebUI Forge with visual editing, real
   - Scroll wheel: Zoom image
   - Left-drag: Pan image
   - Double-click: Reset view
-  - Ctrl + Scroll: Adjust watermark size (±10px)
+  - Ctrl + Scroll: Adjust watermark size (±20px)
   - Shift + Scroll: Adjust rotation angle
   - Alt + Scroll: Adjust opacity
 - **Undo / Clear**: Undo last watermark or clear all
