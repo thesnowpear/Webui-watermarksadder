@@ -73,7 +73,7 @@ class WatermarkManager:
             r = int(color[1:3], 16)
             g = int(color[3:5], 16)
             b = int(color[5:7], 16)
-            a = int(255 * watermark_data.get('opacity', 0.7))
+            a = int(255 * watermark_data.get('opacity', 1))
             color = (r, g, b, a)
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
@@ -108,7 +108,7 @@ class WatermarkManager:
             y_ratio = wm.get('y', 0.5)
             size = wm.get('size', 100)
             rotation = wm.get('rotation', 0)
-            opacity = wm.get('opacity', 0.7)
+            opacity = wm.get('opacity', 1)
 
             # 如果 JS 传来了原图尺寸，按比例缩放 size
             # （处理 Gradio 可能对图片缩放的情况）
@@ -317,7 +317,7 @@ def on_ui_tabs():
                     )
                 # 透明度滑块放在编辑区
                 wm_opacity_slider = gr.Slider(
-                    minimum=0.05, maximum=1.0, value=0.7, step=0.05,
+                    minimum=0.05, maximum=1.0, value=1, step=0.05,
                     label="水印透明度", elem_id="watermark_opacity"
                 )
 
@@ -440,7 +440,7 @@ def on_ui_tabs():
                     "text": data.get("text", ""),
                     "font_size": data.get("font_size", 48),
                     "color": data.get("color", "#FFFFFF"),
-                    "opacity": data.get("opacity", 0.7),
+                    "opacity": data.get("opacity", 1),
                     "ts": time.time()
                 }, ensure_ascii=False)
                 return f"已选择文字水印: {data.get('text', '?')}", bridge_data
@@ -503,7 +503,7 @@ def on_ui_tabs():
             lines = []
             for i, wm in enumerate(wm_list):
                 if wm['type'] == 'text':
-                    lines.append(f"  [{i+1}] 文字: \"{wm.get('text', '')}\" ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}px 透明度:{wm.get('opacity', 0.7):.0%}")
+                    lines.append(f"  [{i+1}] 文字: \"{wm.get('text', '')}\" ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}px 透明度:{wm.get('opacity', 1):.0%}")
                 else:
                     name = Path(wm.get('path', '')).stem if wm.get('path') else '?'
                     lines.append(f"  [{i+1}] 图片: {name} ({wm['x']:.0%}, {wm['y']:.0%}) 大小:{wm['size']}px 透明度:{wm.get('opacity', 1.0):.0%}")

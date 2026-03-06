@@ -18,7 +18,7 @@
         watermarks: [],
         size: 100,
         rotation: 0,
-        opacity: 0.7,
+        opacity: 1,
         canvasReady: false,
         // 图片水印缓存: path -> Image
         imgCache: {},
@@ -276,52 +276,59 @@
     // ============ Canvas 创建/移除 ============
 
     // 计算 img 元素内实际渲染的图片区域（处理 object-fit: contain 的 letterbox）
-    function getRenderedImageRect(imgEl) {
-        var elemRect = imgEl.getBoundingClientRect();
-        var natW = imgEl.naturalWidth;
-        var natH = imgEl.naturalHeight;
-        if (!natW || !natH) return { left: elemRect.left, top: elemRect.top, width: elemRect.width, height: elemRect.height, offsetX: 0, offsetY: 0 };
+    // 返回相对于 container 的本地坐标（不受 CSS transform 影响）
+    function getRenderedImageRect(imgEl, container) {
+        // 使用 offset 属性获取本地坐标（不受 transform 影响）
+        var elemW = imgEl.offsetWidth;
+        var elemH = imgEl.offsetHeight;
 
-        // 检查 object-fit 属性
-        var objectFit = window.getComputedStyle(imgEl).objectFit;
-        // 只有 contain 才有 letterbox 留白需要校正
-        // cover: 图片填满元素（溢出裁切），canvas 直接匹配元素尺寸
-        // fill/none/其他: 元素尺寸即渲染尺寸
-        if (objectFit !== 'contain') {
-            return { left: elemRect.left, top: elemRect.top, width: elemRect.width, height: elemRect.height, offsetX: 0, offsetY: 0 };
+        // 通过 offset 链计算 img 相对于 container 的位置
+        var imgLeft = 0, imgTop = 0;
+        var el = imgEl;
+        while (el && el !== container) {
+            imgLeft += el.offsetLeft;
+            imgTop += el.offsetTop;
+            el = el.offsetParent;
         }
 
-        var elemRatio = elemRect.width / elemRect.height;
+        var natW = imgEl.naturalWidth;
+        var natH = imgEl.naturalHeight;
+        var baseResult = { left: imgLeft, top: imgTop, width: elemW, height: elemH, offsetX: 0, offsetY: 0 };
+
+        if (!natW || !natH || !elemW || !elemH) return baseResult;
+
+        var objectFit = window.getComputedStyle(imgEl).objectFit;
+        if (objectFit !== 'contain') return baseResult;
+
+        var elemRatio = elemW / elemH;
         var imgRatio = natW / natH;
 
         // 如果元素尺寸已经匹配图片宽高比（误差<2%），无需校正
-        if (Math.abs(elemRatio - imgRatio) / imgRatio < 0.02) {
-            return { left: elemRect.left, top: elemRect.top, width: elemRect.width, height: elemRect.height, offsetX: 0, offsetY: 0 };
-        }
+        if (Math.abs(elemRatio - imgRatio) / imgRatio < 0.02) return baseResult;
 
-        var renderW, renderH, offsetX, offsetY;
+        var renderW, renderH, letterboxX, letterboxY;
 
         if (imgRatio > elemRatio) {
             // 图片更宽 → 宽度撑满，高度有上下留白
-            renderW = elemRect.width;
-            renderH = elemRect.width / imgRatio;
-            offsetX = 0;
-            offsetY = (elemRect.height - renderH) / 2;
+            renderW = elemW;
+            renderH = elemW / imgRatio;
+            letterboxX = 0;
+            letterboxY = (elemH - renderH) / 2;
         } else {
             // 图片更高 → 高度撑满，宽度有左右留白
-            renderH = elemRect.height;
-            renderW = elemRect.height * imgRatio;
-            offsetX = (elemRect.width - renderW) / 2;
-            offsetY = 0;
+            renderH = elemH;
+            renderW = elemH * imgRatio;
+            letterboxX = (elemW - renderW) / 2;
+            letterboxY = 0;
         }
 
         return {
-            left: elemRect.left + offsetX,
-            top: elemRect.top + offsetY,
+            left: imgLeft + letterboxX,
+            top: imgTop + letterboxY,
             width: renderW,
             height: renderH,
-            offsetX: offsetX,
-            offsetY: offsetY,
+            offsetX: letterboxX,
+            offsetY: letterboxY,
         };
     }
 
@@ -374,17 +381,13 @@
         const canvas = document.createElement('canvas');
         canvas.id = 'watermark-overlay-canvas';
 
-        const containerRect = container.getBoundingClientRect();
-        // 使用实际渲染的图片区域（排除 object-fit letterbox）
-        const imgRender = getRenderedImageRect(imgEl);
-
-        const offsetTop = imgRender.top - containerRect.top;
-        const offsetLeft = imgRender.left - containerRect.left;
+        // 使用本地坐标计算实际渲染的图片区域（不受 transform 影响）
+        const imgRender = getRenderedImageRect(imgEl, container);
 
         canvas.style.cssText =
             'position:absolute;' +
-            'top:' + offsetTop + 'px;' +
-            'left:' + offsetLeft + 'px;' +
+            'top:' + imgRender.top + 'px;' +
+            'left:' + imgRender.left + 'px;' +
             'width:' + imgRender.width + 'px;' +
             'height:' + imgRender.height + 'px;' +
             'z-index:100;pointer-events:auto;cursor:crosshair;';
@@ -459,28 +462,19 @@
         const container = state.canvas.parentElement;
         if (!container) return;
 
-        // 临时移除 transform 以获取真实尺寸
-        var savedTransform = container.style.transform;
-        container.style.transform = '';
-
-        const containerRect = container.getBoundingClientRect();
-        const imgRender = getRenderedImageRect(state.imgEl);
-
-        // 恢复 transform
-        container.style.transform = savedTransform;
+        // 使用本地坐标（不受 transform 影响），无需临时移除 transform
+        const imgRender = getRenderedImageRect(state.imgEl, container);
 
         if (imgRender.width === 0 || imgRender.height === 0) return;
 
-        const offsetTop = imgRender.top - containerRect.top;
-        const offsetLeft = imgRender.left - containerRect.left;
         const w = Math.round(imgRender.width);
         const h = Math.round(imgRender.height);
 
         // 只在尺寸变化时更新
         if (state.canvas.width === w && state.canvas.height === h) return;
 
-        state.canvas.style.top = offsetTop + 'px';
-        state.canvas.style.left = offsetLeft + 'px';
+        state.canvas.style.top = imgRender.top + 'px';
+        state.canvas.style.left = imgRender.left + 'px';
         state.canvas.style.width = w + 'px';
         state.canvas.style.height = h + 'px';
         state.canvas.width = w;
@@ -506,7 +500,7 @@
                 opacEl.addEventListener('input', (e) => { state.opacity = parseFloat(e.target.value); redraw(); });
                 state.size = parseFloat(sizeEl.value) || 100;
                 state.rotation = parseFloat(rotEl.value) || 0;
-                state.opacity = parseFloat(opacEl.value) || 0.7;
+                state.opacity = parseFloat(opacEl.value) || 1;
                 console.log('[Watermark] Sliders connected');
             }
         }, 500);
@@ -646,7 +640,7 @@
 
         if (isRealCtrl) {
             // Ctrl+滚轮：调整大小(px)
-            const delta = e.deltaY > 0 ? -10 : 10;
+            const delta = e.deltaY > 0 ? -20 : 20;
             state.size = Math.max(1, Math.min(2000, state.size + delta));
             updateSlider('#watermark_size', state.size);
         } else if (e.shiftKey) {
@@ -707,7 +701,7 @@
 
         // 已添加的水印
         state.watermarks.forEach((wm) => {
-            drawWatermarkPreview(ctx, wm, wm.opacity || 0.7);
+            drawWatermarkPreview(ctx, wm, wm.opacity || 1);
         });
 
         // 鼠标跟随预览 - 使用真实透明度，加虚线边框区分
