@@ -2,7 +2,6 @@ import os
 import json
 import zipfile
 import io
-import base64
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFont
 from modules import script_callbacks
@@ -22,6 +21,9 @@ class WatermarkManager:
         self.texts_dir.mkdir(parents=True, exist_ok=True)
 
         self.original_image = None
+        # 缓存：字体、水印图片原图
+        self._font_cache = {}
+        self._wm_img_cache = {}
 
     def list_image_watermarks(self):
         results = []
@@ -80,6 +82,22 @@ class WatermarkManager:
         draw.text(pos, text, fill=color, font=font)
         img.save(output_path)
 
+    def _get_font(self, size):
+        """缓存字体对象避免重复加载"""
+        size = max(1, int(size))
+        if size not in self._font_cache:
+            try:
+                self._font_cache[size] = ImageFont.truetype("arial.ttf", size)
+            except Exception:
+                self._font_cache[size] = ImageFont.load_default()
+        return self._font_cache[size]
+
+    def _get_wm_image(self, path):
+        """缓存水印原图避免重复读盘"""
+        if path not in self._wm_img_cache:
+            self._wm_img_cache[path] = Image.open(path).convert('RGBA')
+        return self._wm_img_cache[path].copy()
+
     def apply_watermark_to_image(self, base_img, watermark_configs):
         if base_img is None:
             return None
@@ -99,11 +117,8 @@ class WatermarkManager:
                 text = wm.get('text', '水印')
                 color = wm.get('color', '#FFFFFF')
                 font_size = wm.get('font_size', 48)
-                scaled_font_size = int(font_size * size / 100)
-                try:
-                    font = ImageFont.truetype("arial.ttf", scaled_font_size)
-                except Exception:
-                    font = ImageFont.load_default()
+                scaled_font_size = max(1, int(font_size * size / 100))
+                font = self._get_font(scaled_font_size)
                 if isinstance(color, str) and color.startswith('#') and len(color) >= 7:
                     r = int(color[1:3], 16)
                     g = int(color[3:5], 16)
@@ -111,16 +126,14 @@ class WatermarkManager:
                 else:
                     r, g, b = 255, 255, 255
                 a = int(255 * opacity)
-                bbox_img = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
-                bbox_draw = ImageDraw.Draw(bbox_img)
-                bbox = bbox_draw.textbbox((0, 0), text, font=font)
+                bbox = font.getbbox(text)
                 tw = bbox[2] - bbox[0] + 20
                 th = bbox[3] - bbox[1] + 20
                 txt_layer = Image.new('RGBA', (tw, th), (0, 0, 0, 0))
                 txt_draw = ImageDraw.Draw(txt_layer)
                 txt_draw.text((10 - bbox[0], 10 - bbox[1]), text, fill=(r, g, b, a), font=font)
                 if rotation != 0:
-                    txt_layer = txt_layer.rotate(-rotation, expand=True, resample=Image.BICUBIC)
+                    txt_layer = txt_layer.rotate(-rotation, expand=True, resample=Image.BILINEAR)
                 paste_x = x - txt_layer.width // 2
                 paste_y = y - txt_layer.height // 2
                 result.paste(txt_layer, (paste_x, paste_y), txt_layer)
@@ -129,17 +142,17 @@ class WatermarkManager:
                 img_path = wm.get('path', '')
                 if not img_path or not os.path.exists(img_path):
                     continue
-                wm_img = Image.open(img_path).convert('RGBA')
+                wm_img = self._get_wm_image(img_path)
                 scale = size / 100.0
                 new_w = max(1, int(wm_img.width * scale))
                 new_h = max(1, int(wm_img.height * scale))
-                wm_img = wm_img.resize((new_w, new_h), Image.LANCZOS)
+                wm_img = wm_img.resize((new_w, new_h), Image.BILINEAR)
                 if opacity < 1.0:
                     alpha = wm_img.split()[3]
                     alpha = alpha.point(lambda p: int(p * opacity))
                     wm_img.putalpha(alpha)
                 if rotation != 0:
-                    wm_img = wm_img.rotate(-rotation, expand=True, resample=Image.BICUBIC)
+                    wm_img = wm_img.rotate(-rotation, expand=True, resample=Image.BILINEAR)
                 paste_x = x - wm_img.width // 2
                 paste_y = y - wm_img.height // 2
                 result.paste(wm_img, (paste_x, paste_y), wm_img)
@@ -259,6 +272,10 @@ def on_ui_tabs():
             # ========== 中栏：编辑区 ==========
             with gr.Column(scale=2, min_width=400):
                 gr.Markdown("### 编辑区")
+                gr.Markdown(
+                    "Ctrl+滚轮: 调整大小 | Shift+滚轮: 调整角度 | Alt+滚轮: 调整透明度",
+                    elem_classes=["watermark-shortcuts-hint"]
+                )
 
                 image_editor = gr.Image(
                     label="编辑区域 - 在此图上点击添加水印",
@@ -276,7 +293,7 @@ def on_ui_tabs():
 
                 with gr.Row():
                     wm_size_slider = gr.Slider(
-                        minimum=10, maximum=500, value=100, step=5,
+                        minimum=1, maximum=1000, value=100, step=1,
                         label="水印大小 (%)", elem_id="watermark_size"
                     )
                     wm_rotation_slider = gr.Slider(
@@ -297,7 +314,6 @@ def on_ui_tabs():
                 )
 
                 # 隐藏组件
-                fetched_image_data = gr.Textbox(visible=False, elem_id="watermark_fetched_image_data")
                 click_coords = gr.Textbox(visible=False, elem_id="watermark_click_coords")
                 selected_wm_bridge = gr.Textbox(visible=False, elem_id="watermark_selected_bridge")
 
@@ -487,7 +503,8 @@ def on_ui_tabs():
         def save_normal(img):
             if img is None:
                 return "没有可保存的图片，请先生成"
-            output_dir = Path("outputs/watermarked")
+            webui_root = Path(__file__).parent.parent.parent.parent
+            output_dir = webui_root / "outputs" / "watermarked"
             output_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time())
             path = output_dir / f"watermarked_{ts}.png"
@@ -497,20 +514,51 @@ def on_ui_tabs():
         def save_extractable(img):
             if img is None or manager.original_image is None:
                 return "没有可保存的图片，请先生成"
-            output_dir = Path("outputs/watermarked")
+            webui_root = Path(__file__).parent.parent.parent.parent
+            output_dir = webui_root / "outputs" / "watermarked"
             output_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time())
             path = output_dir / f"extractable_{ts}.png"
             manager.create_extractable_image(img, manager.original_image, path)
             return f"可解压图片包已保存: {path}\n将 .png 改为 .zip 即可解压出原图"
 
-        def fetch_last_image(image_data_url):
-            if not image_data_url or not image_data_url.startswith("data:"):
+        def fetch_last_image():
+            """从 outputs 文件夹获取最新生成的图片"""
+            # WebUI 根目录: extensions/Webui-watermark-adder/ -> 上两级
+            webui_root = Path(__file__).parent.parent.parent.parent
+            search_dirs = [
+                webui_root / "outputs" / "txt2img-images",
+                webui_root / "outputs" / "img2img-images",
+                webui_root / "outputs" / "txt2img-grids",
+                webui_root / "outputs" / "img2img-grids",
+                webui_root / "outputs" / "extras-images",
+                webui_root / "outputs",
+            ]
+            latest_file = None
+            latest_mtime = 0
+
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                # 递归搜索所有图片文件
+                for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+                    for f in search_dir.rglob(ext):
+                        try:
+                            mtime = f.stat().st_mtime
+                            if mtime > latest_mtime:
+                                latest_mtime = mtime
+                                latest_file = f
+                        except Exception:
+                            pass
+
+            if latest_file is None:
                 return gr.update()
-            header, encoded = image_data_url.split(",", 1)
-            image_bytes = base64.b64decode(encoded)
-            img = Image.open(io.BytesIO(image_bytes))
-            return img
+
+            try:
+                img = Image.open(latest_file)
+                return img
+            except Exception:
+                return gr.update()
 
         def record_img_idx(evt: gr.SelectData):
             return evt.index
@@ -614,13 +662,11 @@ def on_ui_tabs():
             _js="() => { window.watermarkClearAll && window.watermarkClearAll(); window.watermarkRemoveCanvas && window.watermarkRemoveCanvas(); }"
         )
 
+        # 获取上次生成的图片（从 outputs 文件夹扫描）
         fetch_last_btn.click(
-            fn=None,
-            inputs=[],
-            outputs=[fetched_image_data],
-            _js="() => window.watermarkFetchLastImage()"
+            fn=fetch_last_image,
+            outputs=[image_editor]
         )
-        fetched_image_data.change(fn=fetch_last_image, inputs=[fetched_image_data], outputs=[image_editor])
 
         generate_btn.click(
             fn=generate_watermarked,

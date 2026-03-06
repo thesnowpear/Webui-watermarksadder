@@ -131,12 +131,24 @@
             state.imgEl = imgEl;
             removeCanvas();
 
-            // 等图片加载完再创建 canvas
+            // 等图片完全加载（包括解码）再创建 canvas
             if (imgEl.complete && imgEl.naturalWidth > 0) {
-                requestAnimationFrame(() => setupCanvas());
+                // 使用 decode() 确保图片完全解码，避免半黑问题
+                if (imgEl.decode) {
+                    imgEl.decode().then(() => {
+                        requestAnimationFrame(() => setupCanvas());
+                    }).catch(() => {
+                        requestAnimationFrame(() => setupCanvas());
+                    });
+                } else {
+                    requestAnimationFrame(() => setupCanvas());
+                }
             } else {
                 imgEl.addEventListener('load', () => {
-                    requestAnimationFrame(() => setupCanvas());
+                    // load 后再等一帧确保渲染完成
+                    setTimeout(() => {
+                        requestAnimationFrame(() => setupCanvas());
+                    }, 100);
                 }, { once: true });
             }
         }
@@ -333,13 +345,20 @@
     function onWheel(e) {
         e.preventDefault();
         if (e.ctrlKey) {
+            // Ctrl+滚轮：调整大小
+            const delta = e.deltaY > 0 ? -3 : 3;
+            state.size = Math.max(1, Math.min(1000, state.size + delta));
+            updateSlider('#watermark_size', state.size);
+        } else if (e.shiftKey) {
+            // Shift+滚轮：调整角度
             const delta = e.deltaY > 0 ? -5 : 5;
             state.rotation = (state.rotation + delta + 360) % 360;
             updateSlider('#watermark_rotation', state.rotation);
-        } else {
-            const delta = e.deltaY > 0 ? -10 : 10;
-            state.size = Math.max(10, Math.min(500, state.size + delta));
-            updateSlider('#watermark_size', state.size);
+        } else if (e.altKey) {
+            // Alt+滚轮：调整透明度
+            const delta = e.deltaY > 0 ? -0.05 : 0.05;
+            state.opacity = Math.max(0.05, Math.min(1.0, +(state.opacity + delta).toFixed(2)));
+            updateSlider('#watermark_opacity', state.opacity);
         }
         redraw();
     }
@@ -371,7 +390,7 @@
             drawWatermarkPreview(ctx, wm, wm.opacity || 0.7);
         });
 
-        // 鼠标跟随预览
+        // 鼠标跟随预览 - 使用真实透明度，加虚线边框区分
         if (state.isHovering && state.selectedType) {
             drawWatermarkPreview(ctx, {
                 type: state.selectedType,
@@ -381,7 +400,8 @@
                 size: state.size,
                 rotation: state.rotation,
                 opacity: state.opacity,
-            }, state.opacity * 0.6); // 预览再淡一些
+                isPreview: true,
+            }, state.opacity);
         }
     }
 
@@ -392,12 +412,13 @@
         ctx.rotate((wm.rotation * Math.PI) / 180);
 
         if (wm.type === 'text') {
-            // 文字水印预览
-            // 计算预览字号：要和 Python 端的 apply 一致
-            // Python: scaled_font_size = font_size * size / 100, 然后在原图上渲染
-            // Canvas 是屏幕像素，原图可能更大，这里用一个合理的比例
             const baseFontSize = wm.data.font_size || wm.data.fontSize || 48;
-            const fontSize = Math.max(8, baseFontSize * wm.size / 100 * 0.5);
+            // 与 Python 一致: scaled = font_size * size / 100, 然后用 displayRatio 映射到 canvas
+            let displayRatio = 1;
+            if (state.imgEl && state.imgEl.naturalWidth > 0 && state.canvas) {
+                displayRatio = state.canvas.width / state.imgEl.naturalWidth;
+            }
+            const fontSize = Math.max(4, baseFontSize * wm.size / 100 * displayRatio);
             ctx.font = 'bold ' + fontSize + 'px Arial, sans-serif';
             ctx.fillStyle = wm.data.color || '#FFFFFF';
             ctx.textAlign = 'center';
@@ -407,6 +428,19 @@
             const text = wm.data.text || '水印';
             ctx.strokeText(text, 0, 0);
             ctx.fillText(text, 0, 0);
+
+            // 鼠标跟随预览加虚线边框
+            if (wm.isPreview) {
+                const m = ctx.measureText(text);
+                const bw = m.width + 8;
+                const bh = fontSize + 8;
+                ctx.globalAlpha = 0.6;
+                ctx.strokeStyle = '#00aaff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
+                ctx.strokeRect(-bw / 2, -bh / 2, bw, bh);
+                ctx.setLineDash([]);
+            }
 
         } else if (wm.type === 'image') {
             // 图片水印预览：使用真实图片
@@ -426,6 +460,16 @@
                 const drawW = cachedImg.width * scale * displayRatio;
                 const drawH = cachedImg.height * scale * displayRatio;
                 ctx.drawImage(cachedImg, -drawW / 2, -drawH / 2, drawW, drawH);
+
+                // 鼠标跟随预览加虚线边框
+                if (wm.isPreview) {
+                    ctx.globalAlpha = 0.6;
+                    ctx.strokeStyle = '#00aaff';
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([4, 3]);
+                    ctx.strokeRect(-drawW / 2 - 2, -drawH / 2 - 2, drawW + 4, drawH + 4);
+                    ctx.setLineDash([]);
+                }
             } else {
                 // 图片未加载 -> 尝试加载并显示占位
                 if (path && !state.imgCache['_loading_' + path]) {
@@ -467,59 +511,6 @@
         state.watermarks = [];
         removeCanvas();
         state.imgEl = null;
-    };
-
-    // ============ 获取上次生成的图片 ============
-    window.watermarkFetchLastImage = function () {
-        const selectors = [
-            '#txt2img_gallery img[data-testid="detailed-image"]',
-            '#img2img_gallery img[data-testid="detailed-image"]',
-            '#txt2img_gallery .gallery-item img',
-            '#img2img_gallery .gallery-item img',
-            '#txt2img_gallery .thumbnails img',
-            '#img2img_gallery .thumbnails img',
-            '#txt2img_gallery .grid-wrap img',
-            '#img2img_gallery .grid-wrap img',
-            '#txt2img_gallery .preview img',
-            '#img2img_gallery .preview img',
-            '#txt2img_gallery img',
-            '#img2img_gallery img',
-        ];
-
-        let imgSrc = null;
-        for (const sel of selectors) {
-            const imgs = document.querySelectorAll(sel);
-            if (imgs.length > 0 && imgs[0].src) {
-                imgSrc = imgs[0].src;
-                break;
-            }
-        }
-
-        if (!imgSrc) {
-            alert('未找到生成的图片。请先在 txt2img 或 img2img 中生成图片。');
-            return null;
-        }
-
-        if (imgSrc.startsWith('data:')) {
-            return imgSrc;
-        }
-
-        return new Promise((resolve) => {
-            const tmp = new window.Image();
-            tmp.crossOrigin = 'anonymous';
-            tmp.onload = function () {
-                const c = document.createElement('canvas');
-                c.width = tmp.naturalWidth;
-                c.height = tmp.naturalHeight;
-                c.getContext('2d').drawImage(tmp, 0, 0);
-                resolve(c.toDataURL('image/png'));
-            };
-            tmp.onerror = function () {
-                alert('获取图片失败，可能存在跨域限制。');
-                resolve(null);
-            };
-            tmp.src = imgSrc;
-        });
     };
 
     // ============ 启动 ============
